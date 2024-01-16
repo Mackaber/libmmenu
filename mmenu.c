@@ -413,6 +413,16 @@ void save_screenshot(SDL_Surface* surface) {
 	put_file(kScreenshotsPath, count);
 }
 
+void autosave(copy, supports_save_load) {
+	status = kStatusSaveSlot + 1; // The first one is the autosave slot
+	if (supports_save_load) {
+		SDL_Surface* preview = thumbnail(copy);
+		SDL_RWops* out = SDL_RWFromFile(bmp_path, "wb");
+		SDL_SaveBMP_RW(preview, out, 1);
+		SDL_FreeSurface(preview);
+	}
+}
+
 #define kResumeSlotPath "/tmp/mmenu_slot.txt"
 int ResumeSlot(void) {
 	if (!exists(kResumeSlotPath)) return -1;
@@ -592,6 +602,9 @@ MenuReturnStatus ShowMenu(char* rom_path, char* save_path_template, SDL_Surface*
 	int preview_exists = 0;
 	int disable_sleep = exists("/tmp/disable-sleep");
 	unsigned long cancel_start = SDL_GetTicks();
+
+	autosave(copy);
+
 	while (!quit) {
 		unsigned long frame_start = SDL_GetTicks();
 		int pressed_menu = 0;
