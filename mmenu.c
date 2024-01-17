@@ -413,14 +413,30 @@ void save_screenshot(SDL_Surface* surface) {
 	put_file(kScreenshotsPath, count);
 }
 
-void autosave(copy, supports_save_load) {
-	status = kStatusSaveSlot + 1; // The first one is the autosave slot
-	if (supports_save_load) {
-		SDL_Surface* preview = thumbnail(copy);
-		SDL_RWops* out = SDL_RWFromFile(bmp_path, "wb");
-		SDL_SaveBMP_RW(preview, out, 1);
-		SDL_FreeSurface(preview);
-	}
+// By ChatGPT
+int changeFileExtension(const char *originalFilename, const char *newExtension) {
+    char newFilename[256]; // Ensure this buffer is large enough for the new filename
+
+    const char *dot = strrchr(originalFilename, '.');
+    if (!dot || dot == originalFilename) {
+        return -1; // No extension found
+    }
+
+    // Copy the base filename without the extension
+    strncpy(newFilename, originalFilename, dot - originalFilename);
+    newFilename[dot - originalFilename] = '\0';
+
+    // Append the new extension
+    strcat(newFilename, newExtension);
+
+    // Rename the file
+    return rename(originalFilename, newFilename);
+}
+
+void autosave(char* path) {
+  printf("THE PATH: %s", path);
+  int result = changeFileExtension(path, ".st0");
+  printf("THE RESULT: %d", result);
 }
 
 #define kResumeSlotPath "/tmp/mmenu_slot.txt"
@@ -603,7 +619,514 @@ MenuReturnStatus ShowMenu(char* rom_path, char* save_path_template, SDL_Surface*
 	int disable_sleep = exists("/tmp/disable-sleep");
 	unsigned long cancel_start = SDL_GetTicks();
 
-	autosave(copy);
+	while (!quit) {
+		unsigned long frame_start = SDL_GetTicks();
+		int pressed_menu = 0;
+		while (SDL_PollEvent(&event)) {
+			switch( event.type ){
+				case SDL_KEYUP: {
+					SDLKey key = event.key.keysym.sym;
+					if (key==TRIMUI_START) is_start_pressed = 0;
+					else if (key==TRIMUI_SELECT) is_select_pressed = 0;
+					
+					if (acted && keyEvent==kMenuEventKeyUp) {
+						cancel_start = frame_start;
+						if (key==TRIMUI_B || key==TRIMUI_A) {
+							quit = 1;
+						}
+					}
+				} break;
+				case SDL_KEYDOWN: {
+					if (acted) break;
+					SDLKey key = event.key.keysym.sym;
+					cancel_start = frame_start;
+					if (key==TRIMUI_UP) {
+						selected -= 1;
+						if (selected<0) selected += kItemCount;
+						is_dirty = 1;
+					}
+					else if (key==TRIMUI_DOWN) {
+						selected += 1;
+						if (selected==kItemCount) selected -= kItemCount;
+						is_dirty = 1;
+					}
+					else if (key==TRIMUI_LEFT) {
+						if (total_discs && selected==kItemContinue) {
+							disc -= 1;
+							if (disc<0) disc += total_discs;
+							is_dirty = 1;
+							sprintf(disc_name, "Disc %i", disc+1);
+						}
+						else if (selected==kItemSave || selected==kItemLoad) {
+	 						slot -= 1;
+							if (slot<0) slot += kSlotCount;
+							is_dirty = 1;
+						}
+					}
+					else if (key==TRIMUI_RIGHT) {
+						if (total_discs && selected==kItemContinue) {
+							disc += 1;
+							if (disc==total_discs) disc -= total_discs;
+							is_dirty = 1;
+							sprintf(disc_name, "Disc %i", disc+1);
+						}
+						else if (selected==kItemSave || selected==kItemLoad) {
+							slot += 1;
+							if (slot==kSlotCount) slot -= kSlotCount;
+							is_dirty = 1;
+						}
+					}
+					else if (key==TRIMUI_START) is_start_pressed = 1;
+					else if (key==TRIMUI_SELECT) is_select_pressed = 1;
+					
+					if (!supports_save_load) {
+						// NOTE: should not be able to reach save load at this point
+						if (selected==kItemSave && key==TRIMUI_DOWN) selected += 2;
+						else if (selected==kItemLoad && key==TRIMUI_UP) selected -= 2;
+					}
+					
+					if (enable_screenshots) {
+						if (key==TRIMUI_Y) {
+							save_screenshot(NULL);
+							save_screenshot(copy);
+						}
+					}
+				
+					if (is_dirty && (selected==kItemSave || selected==kItemLoad) && supports_save_load) {
+						sprintf(save_path, save_path_template, slot);
+						sprintf(bmp_path, "%s/%s.%d.bmp", mmenu_dir, rom_file, slot);
+					
+						save_exists = exists(save_path);
+						preview_exists = save_exists && exists(bmp_path);
+					}
+				
+					if (key==TRIMUI_MENU) {
+						pressed_menu = 1;
+					}
+					else if (key==TRIMUI_B) {
+						if (keyEvent==kMenuEventKeyDown) quit = 1;
+						else acted = 1;
+						
+						status = kStatusContinue;
+						is_dirty = 1;
+					}
+					else if (key==TRIMUI_A) {
+						if (selected==kItemLoad && !save_exists) break;
+				
+						if (keyEvent==kMenuEventKeyDown) quit = 1;
+						else acted = 1;
+						
+						switch(selected) {
+							case kItemContinue:
+								if (total_discs && rom_disc!=disc) {
+									status = kStatusChangeDisc;
+									char* disc_path = disc_paths[disc];
+									char last_path[256];
+									get_file(kLastPath, last_path);
+									if (!exact_match(last_path, "/mnt/SDCARD/Recently Played")) {
+										put_file(kLastPath, disc_path);
+									}
+									put_file(kChangeDiscPath, disc_path);
+								}
+								else {
+									status = kStatusContinue;
+								}
+							break;
+							case kItemSave:
+								status = kStatusSaveSlot + slot;
+								if (supports_save_load) {
+									SDL_Surface* preview = thumbnail(copy);
+									SDL_RWops* out = SDL_RWFromFile(bmp_path, "wb");
+									SDL_SaveBMP_RW(preview, out, 1);
+									SDL_FreeSurface(preview);
+								}
+							break;
+							case kItemLoad:
+								status = kStatusLoadSlot + slot;
+							break;
+							case kItemAdvanced:
+								status = kStatusOpenMenu;
+							break;
+							case kItemExitGame:
+								status = kStatusExitGame;
+							break;
+						}
+						
+						if (selected==kItemSave || selected==kItemLoad) {
+							char slot_str[8];
+							sprintf(slot_str, "%d", slot);
+							put_file(slot_path, slot_str);
+						}
+						
+						is_dirty = 1;
+					}
+				} break;
+			}
+		}
+		
+		#define kSleepDelay 30000
+		if (pressed_menu || (!disable_sleep && frame_start-cancel_start>=kSleepDelay)) {
+			SDL_FillRect(screen, NULL, 0);
+			SDL_Flip(screen);
+			
+			fauxSleep();
+			cancel_start = SDL_GetTicks();
+			
+			is_dirty = 1;
+		}
+		
+		int old_setting = show_setting;
+		int old_value = setting_value;
+		show_setting = 0;
+		if (is_start_pressed && is_select_pressed) {
+			// buh
+		}
+		else if (is_start_pressed) {
+			show_setting = 1;
+			setting_value = GetBrightness();
+			setting_max = 10;
+			// printf("show brightness: %i\n", setting_value, setting_max);
+		}
+		else if (is_select_pressed) {
+			show_setting = 2;
+			setting_value = GetVolume();
+			setting_max = 20;
+			// printf("show volume: %i\n", setting_value, setting_max);
+		}
+		if (old_setting!=show_setting || old_value!=setting_value) is_dirty = 1;
+		
+		if (is_dirty) {
+			if (acted) {
+				// draw emu screen immediately so the wait for keyup feels like emu delay (because it is)
+				SDL_BlitSurface(copy, NULL, screen, NULL);
+			}
+			else {
+				// ui
+				SDL_BlitSurface(copy, NULL, screen, NULL); // full screen image effectively clears screen
+				SDL_BlitSurface(overlay, NULL, screen, NULL);
+				SDL_BlitSurface(ui_top_bar, NULL, screen, NULL);
+				SDL_BlitSurface(ui_bottom_bar, NULL, screen, &(SDL_Rect){0,210,0,0});
+			
+				// game name
+				text = TTF_RenderUTF8_Blended(tiny, rom_name, gold);
+				int tw = text->w;
+				int tx = (320-tw)/2;
+				if (tx<6) {
+					tx = 6;
+					tw = 291;
+				}
+
+				SDL_BlitSurface(text, &(SDL_Rect){0,0,tw,text->h}, screen, &(SDL_Rect){tx,6,0,0});
+				SDL_FreeSurface(text);
+				
+				// battery
+				int charge = getBatteryLevel();
+				SDL_Surface* ui_power_icon;
+				if (charge<41)		ui_power_icon = ui_power_0_icon;
+				else if (charge<43) ui_power_icon = ui_power_20_icon;
+				else if (charge<44) ui_power_icon = ui_power_50_icon;
+				else if (charge<46) ui_power_icon = ui_power_80_icon;
+				else				ui_power_icon = ui_power_100_icon;
+				SDL_BlitSurface(ui_power_icon, NULL, screen, &(SDL_Rect){297,3,0,0});
+				
+				// settings overlay
+				if (show_setting) {
+					// bg
+					SDL_BlitSurface(ui_settings_bg, NULL, screen, &(SDL_Rect){87,37,0,0});
+					// icon
+					SDL_BlitSurface(show_setting==1?ui_brightness_icon:(setting_value>0?ui_volume_icon:ui_mute_icon), NULL, screen, &(SDL_Rect){93,41,0,0});
+					// bar
+					SDL_BlitSurface(ui_settings_bar_empty, NULL, screen, &(SDL_Rect){117,48,0,0});
+					int w = 108 * ((float)setting_value / setting_max);
+					SDL_BlitSurface(ui_settings_bar_full, &(SDL_Rect){0,0,w,4}, screen, &(SDL_Rect){117,48,w,4});
+					
+				}
+				
+				// menu
+				{
+					int x = 14;
+					int y = 75;
+					if (supports_save_load) {
+						SDL_BlitSurface(ui_menu_bg, NULL, screen, &(SDL_Rect){6,71,0,0});
+					}
+					else {
+						SDL_BlitSurface(ui_menu3_bg, NULL, screen, &(SDL_Rect){6,71+50,0,0});
+						y += 50;
+					}
+	
+					for (int i=0; i<kItemCount; i++) {
+						char* item = items[i];
+						if (total_discs && i==kItemContinue) {
+							if (rom_disc!=disc) item = "Insert";
+							else item = "Continue";
+						}
+						
+						if (!supports_save_load && (i==kItemSave || i==kItemLoad)) continue;
+							
+						SDL_Color color = gold;
+						if (i==selected) {
+							SDL_BlitSurface(ui_menu_bar, NULL, screen, &(SDL_Rect){6,y,0,0});
+							color = white;
+						}
+	
+						text = TTF_RenderUTF8_Blended(font, item, color);
+						SDL_BlitSurface(text, NULL, screen, &(SDL_Rect){x,y+4,0,0});
+						SDL_FreeSurface(text);
+				
+						if (i==kItemSave || i==kItemLoad || (total_discs && i==kItemContinue)) {
+							SDL_BlitSurface(i==selected?ui_arrow_right_w:ui_arrow_right, NULL, screen, &(SDL_Rect){132,y+8,0,0});
+						}
+		
+						y += 25;
+					}
+				}
+			
+				// disc change
+				if (total_discs && selected==kItemContinue) {
+					SDL_BlitSurface(ui_disc_bg, NULL, screen, &(SDL_Rect){148,71,0,0});
+					
+					text = TTF_RenderUTF8_Blended(font, disc_name, gold);
+					SDL_BlitSurface(text, NULL, screen, &(SDL_Rect){210,75+4,0,0});
+					SDL_FreeSurface(text);
+				}
+				// slot preview
+				else if (supports_save_load && (selected==kItemSave || selected==kItemLoad)) {
+					SDL_BlitSurface(ui_slot_bg, NULL, screen, &(SDL_Rect){148,71,0,0});
+				
+					if (preview_exists) { // has save, has preview
+						SDL_Surface* preview = IMG_Load(bmp_path);
+						SDL_BlitSurface(preview, NULL, screen, &(SDL_Rect){151,74,0,0});
+						SDL_FreeSurface(preview);
+					}
+					else if (save_exists) { // has save, no preview
+						SDL_BlitSurface(ui_no_preview, NULL, screen, &(SDL_Rect){151+(160-ui_no_preview->w)/2,126,0,0});
+					}
+					else {
+						SDL_BlitSurface(ui_empty_slot, NULL, screen, &(SDL_Rect){151+(160-ui_empty_slot->w)/2,126,0,0});
+					}
+					SDL_BlitSurface(ui_slot_overlay, NULL, screen, &(SDL_Rect){151,74,0,0});
+				
+					SDL_BlitSurface(ui_selected_dot, NULL, screen, &(SDL_Rect){200+(slot * 8),197,0,0});
+				}
+			
+				// hints
+				{
+					// browse
+					SDL_BlitSurface(ui_menu_icon, NULL, screen, &(SDL_Rect){10,218-1,0,0});
+					text = TTF_RenderUTF8_Blended(tiny, "SLEEP", white);
+					SDL_BlitSurface(text, NULL, screen, &(SDL_Rect){56,220-1,0,0});
+					SDL_FreeSurface(text);
+	
+					// A (varies)
+					SDL_BlitSurface(ui_round_button, NULL, screen, &(SDL_Rect){10+251,218-1,0,0});
+					text = TTF_RenderUTF8_Blended(font, "A", bronze);
+					SDL_BlitSurface(text, NULL, screen, &(SDL_Rect){10+251+6,218,0,0});
+					SDL_FreeSurface(text);
+	
+					text = TTF_RenderUTF8_Blended(tiny, "ACT", white);
+					SDL_BlitSurface(text, NULL, screen, &(SDL_Rect){10+276,220-1,0,0});
+					SDL_FreeSurface(text);
+	
+					// B Back
+					SDL_BlitSurface(ui_round_button, NULL, screen, &(SDL_Rect){10+251-68,218-1,0,0});
+					text = TTF_RenderUTF8_Blended(font, "B", bronze);
+					SDL_BlitSurface(text, NULL, screen, &(SDL_Rect){10+251+6-68+1,218,0,0});
+					SDL_FreeSurface(text);
+
+					text = TTF_RenderUTF8_Blended(tiny, "BACK", white);
+					SDL_BlitSurface(text, NULL, screen, &(SDL_Rect){10+276-68,220-1,0,0});
+					SDL_FreeSurface(text);
+				}
+			}
+			SDL_Flip(screen);
+			is_dirty = 0;
+		}
+		
+		// slow down to 60fps
+		unsigned long frame_duration = SDL_GetTicks() - frame_start; // 0-1 on non-dirty frames, 11-12 on dirty ones
+		// printf("frame_duration:%lu\n", frame_duration);
+		#define kTargetFrameDuration 17
+		if (frame_duration<kTargetFrameDuration) SDL_Delay(kTargetFrameDuration-frame_duration);
+	}
+	
+	// push emulator screen so any lag is on the emulator not our menu (because it is!)
+	SDL_BlitSurface(copy, NULL, screen, NULL);
+	SDL_FreeSurface(copy);
+	SDL_Flip(screen);
+	
+	for (int i=0; i<total_discs; i++) {
+		free(disc_paths[i]);
+	}
+	
+	SDL_EnableKeyRepeat(0,100);
+
+	putenv("trimui_show=no");
+	screen->unused1 = 0; // trimui_show=now
+
+	return status;
+}
+
+// This is a straight up copy paste. Because this is just a hack and I'm not planning supporting it.
+MenuReturnStatus ShowMenuWithAutoSave(char* rom_path, char* save_path_template, char* auto_save_path, SDL_Surface* frame, MenuReturnEvent keyEvent) {
+	screen = SDL_GetVideoSurface();
+
+	putenv("trimui_show=yes");
+	screen->unused1 = 1; // trimui_show=yes
+
+	SDL_Surface* text;
+	SDL_Surface* copy = SDL_CreateRGBSurface(SDL_SWSURFACE, 320, 240, 16, 0, 0, 0, 0);	
+	SDL_BlitSurface(frame, NULL, copy, NULL);
+	
+	int supports_save_load = save_path_template!=NULL;
+	
+	SDL_EnableKeyRepeat(300,100); // TODO: does this need to be reset?
+	
+	char* tmp;
+	char rom_file[256]; // with extension
+	char rom_name[256]; // without extension or cruft
+	char slot_path[256];
+	
+	tmp = strrchr(rom_path,'/');
+	if (tmp==NULL) tmp = rom_path;
+	else tmp += 1;
+
+	strcpy(rom_name, tmp);
+	strcpy(rom_file, tmp);
+	tmp = strrchr(rom_name, '.');
+	if (tmp!=NULL) tmp[0] = '\0';
+	
+	// remove trailing parens (round and square)
+	char safe[256];
+	strcpy(safe,rom_name);
+	while ((tmp=strrchr(rom_name, '('))!=NULL || (tmp=strrchr(rom_name, '['))!=NULL) {
+		tmp[0] = '\0';
+		tmp = rom_name;
+	}
+	// Trim trailing space
+	tmp = rom_name+strlen(rom_name)-1;
+    while(tmp>rom_name && isspace((unsigned char)*tmp)) tmp--;
+    tmp[1] = '\0';
+	if (rom_name[0]=='\0') strcpy(rom_name,safe);
+	
+	char mmenu_dir[256]; // /full/path/to/rom_dir/.mmenu
+	strcpy(mmenu_dir, rom_path);
+	tmp = mmenu_dir + strlen("/mnt/SDCARD/Roms/");
+	tmp = strchr(tmp, '/') + 1;
+	strcpy(tmp, ".mmenu");
+	mkdir(mmenu_dir, 0755);
+	
+	sprintf(slot_path, "%s/%s.txt", mmenu_dir, rom_file);
+	strcpy(slot_path, mmenu_dir);
+	strcpy(slot_path+strlen(slot_path), "/");
+	strcpy(slot_path+strlen(slot_path), rom_file);
+	tmp = strrchr(slot_path, '.') + 1;
+	strcpy(tmp, "txt");
+	
+	// does this game have an m3u?
+	int rom_disc = -1;
+	int disc = rom_disc;
+	int total_discs = 0;
+	char disc_name[16];
+	char* disc_paths[9]; // up to 9 paths, Arc the Lad Collection is 7 discs
+	char ext[8];
+	tmp = strrchr(rom_path, '.');
+	strncpy(ext, tmp, 8);
+	for (int i=0; i<4; i++) {
+		ext[i] = tolower(ext[i]);
+	}
+	// only check for m3u if rom is a cue
+	if (strncmp(ext, ".cue", 8)==0) {
+		// construct m3u path based on parent directory
+		char m3u_path[256];
+		strcpy(m3u_path, rom_path);
+		tmp = strrchr(m3u_path, '/') + 1;
+		tmp[0] = '\0';
+	
+		// path to parent directory
+		char base_path[256];
+		strcpy(base_path, m3u_path);
+	
+		tmp = strrchr(m3u_path, '/');
+		tmp[0] = '\0';
+	
+		// get parent directory name
+		char dir_name[256];
+		tmp = strrchr(m3u_path, '/');
+		strcpy(dir_name, tmp);
+	
+		// dir_name is also our m3u file name
+		tmp = m3u_path + strlen(m3u_path); 
+		strcpy(tmp, dir_name);
+	
+		// add extension
+		tmp = m3u_path + strlen(m3u_path);
+		strcpy(tmp, ".m3u");
+	
+		if (exists(m3u_path)) {
+			//read m3u file
+			FILE* file = fopen(m3u_path, "r");
+			if (file) {
+				char line[256];
+				while (fgets(line,256,file)!=NULL) {
+					int len = strlen(line);
+					if (len>0 && line[len-1]=='\n') {
+						line[len-1] = 0; // trim newline
+						len -= 1;
+						if (len>0 && line[len-1]=='\r') {
+							line[len-1] = 0; // trim Windows newline
+							len -= 1;
+						}
+					}
+					if (len==0) continue; // skip empty lines
+			
+					char disc_path[256];
+					strcpy(disc_path, base_path);
+					tmp = disc_path + strlen(disc_path);
+					strcpy(tmp, line);
+					
+					// found a valid disc path
+					if (exists(disc_path)) {
+						disc_paths[total_discs] = copy_string(disc_path);
+						// matched our current disc
+						if (exact_match(disc_path, rom_path)) {
+							rom_disc = total_discs;
+							disc = rom_disc;
+							sprintf(disc_name, "Disc %i", disc+1);
+						}
+						total_discs += 1;
+					}
+				}
+				fclose(file);
+			}
+		}
+	}
+	
+	load_screenshots();
+	
+	int status = kStatusContinue;
+	int selected = 0; // resets every launch
+	if (exists(slot_path)) {
+		char tmp[16];
+		get_file(slot_path, tmp);
+		slot = atoi(tmp);
+	}
+	
+	char save_path[256];
+	char bmp_path[324];
+	
+	SDL_Event event;
+	int is_dirty = 1;
+	int is_start_pressed = 0;
+	int is_select_pressed = 0;
+	int show_setting = 0; // 1=brightness,2=volume
+	int setting_value = 0;
+	int setting_max = 0;
+	int quit = 0;
+	int acted = 0;
+	int save_exists = 0;
+	int preview_exists = 0;
+	int disable_sleep = exists("/tmp/disable-sleep");
+	unsigned long cancel_start = SDL_GetTicks();
 
 	while (!quit) {
 		unsigned long frame_start = SDL_GetTicks();
@@ -688,6 +1211,7 @@ MenuReturnStatus ShowMenu(char* rom_path, char* save_path_template, SDL_Surface*
 				
 					if (key==TRIMUI_MENU) {
 						pressed_menu = 1;
+						autosave(auto_save_path);
 					}
 					else if (key==TRIMUI_B) {
 						if (keyEvent==kMenuEventKeyDown) quit = 1;
